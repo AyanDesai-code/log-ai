@@ -1,6 +1,6 @@
 from flask import Flask, render_template, jsonify
 from flask_socketio import SocketIO, emit
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "secret!"
@@ -12,9 +12,22 @@ socketio = SocketIO(
 )
 
 # ----------------------------
-# STORAGE (INCIDENT-AWARE)
+# STORAGE LAYERS
 # ----------------------------
-alerts = OrderedDict()   # alert_id -> alert
+
+alerts = OrderedDict()     # alert_id -> alert
+
+cases = defaultdict(lambda: {
+    "ip": None,
+    "user": None,
+    "alerts": [],
+    "first_seen": None,
+    "last_seen": None,
+    "severity": "LOW",
+    "attack_type": "NORMAL",
+    "confidence": 0.0,
+    "event_count": 0
+})
 
 
 # ----------------------------
@@ -30,6 +43,11 @@ def get_alerts():
     return jsonify(list(alerts.values()))
 
 
+@app.route("/cases")
+def get_cases():
+    return jsonify(dict(cases))
+
+
 # ----------------------------
 # SOCKET CONNECTION
 # ----------------------------
@@ -37,34 +55,53 @@ def get_alerts():
 def on_connect():
     print("Client connected")
 
-    # send full state on connect
     emit("init_alerts", list(alerts.values()))
+    emit("init_cases", dict(cases))
 
 
 # ----------------------------
-# REAL ALERT HANDLER (FROM realtime_ids.py)
+# ALERT INGESTION (FROM realtime_ids.py)
 # ----------------------------
 @socketio.on("new_alert")
 def handle_new_alert(data):
-    """
-    Receives structured alerts from realtime_ids.py
-    """
     alert_id = data.get("id")
-
     if not alert_id:
         return
 
-    # store latest version of alert (overwrite = real-time update model)
     alerts[alert_id] = data
 
-    print(f"📥 Alert received: {alert_id}")
+    ip = data.get("ip", "unknown")
 
-    # broadcast to all dashboards
+    case = cases[ip]
+
+    # ----------------------------
+    # INIT CASE METADATA
+    # ----------------------------
+    case["ip"] = ip
+    case["user"] = data.get("user", "unknown")
+
+    case["alerts"].append(alert_id)
+    case["event_count"] += 1
+
+    case["first_seen"] = case["first_seen"] or data.get("timestamp")
+    case["last_seen"] = data.get("timestamp")
+
+    # ----------------------------
+    # CASE EVOLUTION (INTELLIGENCE)
+    # ----------------------------
+    case["severity"] = data.get("severity", "LOW")
+    case["attack_type"] = data.get("attack_type", "UNKNOWN")
+    case["confidence"] = max(case["confidence"], data.get("confidence", 0.0))
+
+    print(f"📥 Alert -> Case updated: {ip} ({alert_id})")
+
+    # broadcast real-time updates
     socketio.emit("new_alert", data)
+    socketio.emit("case_update", case)
 
 
 # ----------------------------
-# OPTIONAL: SIMPLE BACKGROUND HEARTBEAT (debug only)
+# HEARTBEAT
 # ----------------------------
 def heartbeat():
     while True:

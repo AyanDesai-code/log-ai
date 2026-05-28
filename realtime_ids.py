@@ -3,7 +3,7 @@ import subprocess
 import hashlib
 import re
 from collections import deque, defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from socketio import Client
 from sklearn.ensemble import IsolationForest
@@ -14,7 +14,7 @@ from sklearn.preprocessing import StandardScaler
 # ----------------------------
 LOG_PATH = "/var/log/auth.log"
 WINDOW_SIZE = 10
-ALERT_COOLDOWN = 30  # seconds per IP
+ALERT_COOLDOWN = 30
 
 buffer = deque(maxlen=WINDOW_SIZE)
 
@@ -30,14 +30,18 @@ sio = Client(
 # ----------------------------
 # STATE (SIEM CORE)
 # ----------------------------
-last_alert_time = {}        # ip -> timestamp
+last_alert_time = {}
+
 incidents = defaultdict(lambda: {
     "failed_auth": 0,
     "sessions": 0,
     "logins": 0,
     "first_seen": None,
     "last_seen": None,
-    "severity": "LOW"
+    "severity": "LOW",
+    "attack_type": "NORMAL",
+    "confidence": 0.0,
+    "event_count": 0
 })
 
 # ----------------------------
@@ -69,19 +73,77 @@ def severity_from_score(failed):
 
 def should_alert(ip):
     now = time.time()
-    if ip in last_alert_time:
-        if now - last_alert_time[ip] < ALERT_COOLDOWN:
-            return False
+    if ip in last_alert_time and now - last_alert_time[ip] < ALERT_COOLDOWN:
+        return False
     last_alert_time[ip] = now
     return True
 
 
 # ----------------------------
-# SOCKET EVENTS
+# ATTACK CLASSIFICATION
 # ----------------------------
+from collections import Counter
+
+
+def classify_attack(features, ip, user, buffer_lines):
+    failed_auth, sessions, logins = features
+
+    # ----------------------------
+    # SAFETY: normalize buffer input
+    # ----------------------------
+    if not buffer_lines:
+        buffer_lines = []
+
+    normalized_lines = [str(l).lower() for l in buffer_lines]
+
+    # ----------------------------
+    # CONTEXT ANALYSIS
+    # ----------------------------
+    ip_counts = Counter()
+    user_counts = Counter()
+
+    for l in normalized_lines:
+        ip_counts[extract_ip(l)] += 1
+        user_counts[extract_user(l)] += 1
+
+    repeated_user = user_counts.get(user, 0) >= 3
+    repeated_ip = ip_counts.get(ip, 0) >= 3
+
+    recent_failed = sum(
+        1 for l in normalized_lines if "failed password" in l
+    )
+
+    # ----------------------------
+    # SCORE MODEL
+    # ----------------------------
+    score = 0
+    score += failed_auth * 10
+    score += recent_failed * 5
+    score += 5 if sessions == 0 else -5
+    score += 3 if repeated_user else 0
+    score += 3 if repeated_ip else 0
+
+    # ----------------------------
+    # CLASSIFICATION
+    # ----------------------------
+    if score >= 80:
+        return "BRUTE_FORCE", 0.95
+
+    if failed_auth >= 5 and repeated_user:
+        return "CREDENTIAL_STUFFING", 0.85
+
+    if failed_auth >= 3 and sessions == 0:
+        return "USER_ENUMERATION", 0.80
+
+    if 2 <= failed_auth < 5:
+        return "PASSWORD_GUESSING", 0.60
+
+    return "NORMAL", 0.50
+
 @sio.event
 def connect():
     print("✅ Connected to SOC server")
+
 
 @sio.event
 def disconnect():
@@ -125,11 +187,7 @@ def extract_features(lines):
         if "gdm-password" in l:
             logins += 1
 
-    return {
-        "features": [failed_auth, sessions, logins],
-        "ip": ip,
-        "user": user
-    }
+    return [failed_auth, sessions, logins], ip, user
 
 
 # ----------------------------
@@ -140,12 +198,11 @@ print("🔧 Building baseline...")
 with open(LOG_PATH, "r") as f:
     raw = f.readlines()[-1000:]
 
-baseline = []
-
-for i in range(0, len(raw), WINDOW_SIZE):
-    chunk = raw[i:i + WINDOW_SIZE]
-    if len(chunk) == WINDOW_SIZE:
-        baseline.append(extract_features(chunk)["features"])
+baseline = [
+    extract_features(raw[i:i + WINDOW_SIZE])[0]
+    for i in range(0, len(raw), WINDOW_SIZE)
+    if len(raw[i:i + WINDOW_SIZE]) == WINDOW_SIZE
+]
 
 if len(baseline) < 5:
     print("❌ Not enough baseline data")
@@ -159,10 +216,12 @@ model.fit(X_train)
 
 print("✅ Model ready")
 
+
 # ----------------------------
 # CONNECT SOCKET
 # ----------------------------
 sio.connect("http://localhost:5000")
+
 
 # ----------------------------
 # LIVE MONITORING
@@ -187,31 +246,35 @@ while True:
     if len(buffer) < WINDOW_SIZE:
         continue
 
-    result = extract_features(buffer)
-    features = result["features"]
-    ip = result["ip"]
-    user = result["user"]
+    features, ip, user = extract_features(buffer)
 
     X = scaler.transform([features])
     score = float(model.decision_function(X)[0])
     pred = int(model.predict(X)[0])
 
-    # ----------------------------
-    # UPDATE INCIDENT AGGREGATION
-    # ----------------------------
     inc = incidents[ip]
-    inc["failed_auth"] = features[0]
-    inc["sessions"] = features[1]
-    inc["logins"] = features[2]
-    inc["last_seen"] = datetime.utcnow().isoformat()
-
-    if not inc["first_seen"]:
-        inc["first_seen"] = inc["last_seen"]
-
-    inc["severity"] = severity_from_score(features[0])
 
     # ----------------------------
-    # ESCALATION LOGIC
+    # INCIDENT AGGREGATION
+    # ----------------------------
+    inc["failed_auth"] += features[0]
+    inc["sessions"] += features[1]
+    inc["logins"] += features[2]
+    inc["event_count"] += 1
+
+    now = datetime.now(timezone.utc).isoformat()
+    inc["last_seen"] = now
+    if not inc["first_seen"]:
+        inc["first_seen"] = now
+
+    inc["severity"] = severity_from_score(inc["failed_auth"])
+
+    attack_type, confidence = classify_attack(features, ip, user, buffer)
+    inc["attack_type"] = attack_type
+    inc["confidence"] = confidence
+
+    # ----------------------------
+    # ATTACK DETECTION
     # ----------------------------
     is_attack = pred == -1 or features[0] >= 5
 
@@ -221,19 +284,21 @@ while True:
 
         alert = {
             "id": alert_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": now,
             "ip": ip,
             "user": user,
             "severity": inc["severity"],
+            "attack_type": attack_type,
+            "confidence": confidence,
             "failed_auth": features[0],
             "sessions": features[1],
             "logins": features[2],
             "score": score,
             "raw": line,
-            "incident": dict(inc)   # grouped context
+            "incident": dict(inc)
         }
 
-        print("\n🚨 ALERT (GROUPED INCIDENT)")
+        print("\n🚨 ALERT (CLASSIFIED + GROUPED)")
         print(alert)
 
         send_alert(alert)

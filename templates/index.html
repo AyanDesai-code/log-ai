@@ -8,9 +8,15 @@
             font-family: Arial;
             background: #0b0f14;
             color: #e6e6e6;
+            display: flex;
+            gap: 20px;
         }
 
-        .alert {
+        .panel {
+            width: 50%;
+        }
+
+        .alert, .case {
             padding: 10px;
             margin: 8px;
             border-radius: 6px;
@@ -27,44 +33,95 @@
             font-size: 12px;
             opacity: 0.8;
         }
+
+        h2 {
+            margin-left: 8px;
+        }
     </style>
 </head>
 
 <body>
-    <h1>🚨 SOC Dashboard</h1>
 
-    <div id="alerts"></div>
+    <!-- ALERTS -->
+    <div class="panel">
+        <h2>🚨 Alerts</h2>
+        <div id="alerts"></div>
+    </div>
+
+    <!-- CASES -->
+    <div class="panel">
+        <h2>🧠 Cases (Attack Groups)</h2>
+        <div id="cases"></div>
+    </div>
 
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script>
         const socket = io("http://localhost:5000");
+
         const alertsDiv = document.getElementById("alerts");
+        const casesDiv = document.getElementById("cases");
 
-        const seen = new Map();
+        const alertMap = new Map();
+        const caseMap = new Map();
 
+        // ----------------------------
+        // ALERT RENDER
+        // ----------------------------
         function renderAlert(alert) {
 
-            // update existing alert instead of duplicating
-            if (seen.has(alert.id)) {
-                seen.get(alert.id).remove();
+            if (alertMap.has(alert.id)) {
+                alertMap.get(alert.id).remove();
             }
 
             const el = document.createElement("div");
             el.className = "alert " + (alert.severity || "LOW");
 
             el.innerHTML = `
-                <div><b>[${alert.severity}]</b> Incident Alert</div>
+                <div><b>[${alert.severity}]</b> ${alert.attack_type || "UNKNOWN"}</div>
                 <div class="meta">ID: ${alert.id}</div>
                 <div class="meta">IP: ${alert.ip || "unknown"}</div>
                 <div class="meta">User: ${alert.user || "unknown"}</div>
                 <div class="meta">Failed Auth: ${alert.failed_auth || 0}</div>
+                <div class="meta">Confidence: ${(alert.confidence * 100).toFixed(1)}%</div>
                 <div class="meta">Score: ${alert.score?.toFixed?.(3) || alert.score}</div>
             `;
 
             alertsDiv.prepend(el);
-            seen.set(alert.id, el);
+            alertMap.set(alert.id, el);
         }
 
+        // ----------------------------
+        // CASE RENDER (NEW)
+        // ----------------------------
+        function renderCase(caseData) {
+
+            const ip = caseData.ip;
+
+            if (caseMap.has(ip)) {
+                caseMap.get(ip).remove();
+            }
+
+            const el = document.createElement("div");
+            el.className = "case " + (caseData.severity || "LOW");
+
+            el.innerHTML = `
+                <div><b>Case: ${ip}</b></div>
+                <div class="meta">User: ${caseData.user}</div>
+                <div class="meta">Attack Type: ${caseData.attack_type}</div>
+                <div class="meta">Severity: ${caseData.severity}</div>
+                <div class="meta">Confidence: ${(caseData.confidence * 100).toFixed(1)}%</div>
+                <div class="meta">Events: ${caseData.event_count}</div>
+                <div class="meta">First Seen: ${caseData.first_seen}</div>
+                <div class="meta">Last Seen: ${caseData.last_seen}</div>
+            `;
+
+            casesDiv.prepend(el);
+            caseMap.set(ip, el);
+        }
+
+        // ----------------------------
+        // SOCKET EVENTS
+        // ----------------------------
         socket.on("connect", () => {
             console.log("connected");
         });
@@ -74,8 +131,15 @@
         });
 
         socket.on("new_alert", (alert) => {
-            console.log("NEW ALERT:", alert);
             renderAlert(alert);
+        });
+
+        socket.on("init_cases", (data) => {
+            Object.values(data).forEach(renderCase);
+        });
+
+        socket.on("case_update", (caseData) => {
+            renderCase(caseData);
         });
     </script>
 </body>
