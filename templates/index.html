@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SOC Dashboard</title>
+
+    <style>
+        body {
+            font-family: Arial;
+            background: #0b0f14;
+            color: #e6e6e6;
+        }
+
+        .alert {
+            padding: 10px;
+            margin: 8px;
+            border-radius: 6px;
+            background: #1a1f2a;
+            border-left: 5px solid gray;
+        }
+
+        .LOW { border-left-color: green; }
+        .MEDIUM { border-left-color: orange; }
+        .HIGH { border-left-color: red; }
+        .CRITICAL { border-left-color: darkred; font-weight: bold; }
+
+        .meta {
+            font-size: 12px;
+            opacity: 0.8;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🚨 SOC Dashboard</h1>
+
+    <div id="alerts"></div>
+
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script>
+        const socket = io("http://localhost:5000");
+        const alertsDiv = document.getElementById("alerts");
+
+        const seen = new Map();
+
+        function renderAlert(alert) {
+
+            // update existing alert instead of duplicating
+            if (seen.has(alert.id)) {
+                seen.get(alert.id).remove();
+            }
+
+            const el = document.createElement("div");
+            el.className = "alert " + (alert.severity || "LOW");
+
+            el.innerHTML = `
+                <div><b>[${alert.severity}]</b> Incident Alert</div>
+                <div class="meta">ID: ${alert.id}</div>
+                <div class="meta">IP: ${alert.ip || "unknown"}</div>
+                <div class="meta">User: ${alert.user || "unknown"}</div>
+                <div class="meta">Failed Auth: ${alert.failed_auth || 0}</div>
+                <div class="meta">Score: ${alert.score?.toFixed?.(3) || alert.score}</div>
+            `;
+
+            alertsDiv.prepend(el);
+            seen.set(alert.id, el);
+        }
+
+        socket.on("connect", () => {
+            console.log("connected");
+        });
+
+        socket.on("init_alerts", (data) => {
+            data.forEach(renderAlert);
+        });
+
+        socket.on("new_alert", (alert) => {
+            console.log("NEW ALERT:", alert);
+            renderAlert(alert);
+        });
+    </script>
+</body>
+</html>
