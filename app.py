@@ -130,11 +130,32 @@ def get_cases():
 # SOCKET CONNECT
 # ============================
 
+def sanitize(obj):
+    if isinstance(obj, set):
+        return list(obj)
+
+    if isinstance(obj, dict):
+        return {k: sanitize(v) for k, v in obj.items()}
+
+    if isinstance(obj, list):
+        return [sanitize(v) for v in obj]
+
+    return obj
+
+
 @socketio.on("connect")
 def on_connect():
-    emit("init_alerts", list(alerts.values()))
-    emit("init_cases", dict(cases))
+    print("CLIENT CONNECTED")
 
+    emit(
+        "init_alerts",
+        sanitize(list(alerts.values()))
+    )
+
+    emit(
+        "init_cases",
+        sanitize(dict(cases))
+    )
 
 # ============================
 # ALERT INGESTION PIPELINE
@@ -197,19 +218,13 @@ def handle_new_alert(data):
     # attach MITRE mapping
     data["mitre"] = MITRE_MAP.get(attack_type, [])
 
-    # ============================
-    # BROADCAST
-    # ============================
 
     emit("new_alert", data, broadcast=True)
-    socketio.emit("case_update", case)
-
+    socketio.emit(
+        "case_update",
+        sanitize(case)
+    )
     print(f"📥 CASE UPDATED: {ip}:{user} | {attack_type} | {case['severity']}")
-
-
-# ============================
-# HEARTBEAT
-# ============================
 
 def heartbeat():
     while True:

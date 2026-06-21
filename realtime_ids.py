@@ -197,15 +197,15 @@ def hybrid_detect(features, ip, user, buffer_lines, ml_score):
     # -------------------------
     # RULES (ORDER FIXED)
     # -------------------------
-    if brute_score >= 20:
+    if brute_score >= 10:
         label = "BRUTE_FORCE"
         base = 0.97
 
-    elif stuffing_score >= 10:
+    elif stuffing_score >= 6:
         label = "CREDENTIAL_STUFFING"
         base = 0.90
 
-    elif enum_score >= 8:
+    elif enum_score >= 3:
         label = "USER_ENUMERATION"
         base = 0.82
 
@@ -338,16 +338,24 @@ while True:
         alert = {
             "id": make_id(f"{ip}-{user}-{line}-{ml_score}"),
             "timestamp": now(),
+
             "ip": ip,
             "user": user,
+
+            "failed_auth": features[0],
+
             "severity": case["severity"],
             "attack_type": attack_type,
+
             "confidence": risk,
             "score": ml_score,
+
             "mitre": case["mitre"],
+
             "raw": line,
-            "case": dict(case)
-        }
+
+            "case": sanitize(dict(case))
+}
 
         print("🚨 ALERT:", alert)
         send_alert(alert)
