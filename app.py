@@ -10,10 +10,6 @@ app.config["SECRET_KEY"] = "soc-secret"
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 
-# ============================
-# STORAGE LAYERS
-# ============================
-
 alerts = OrderedDict()
 
 cases = defaultdict(lambda: {
@@ -38,9 +34,6 @@ cases = defaultdict(lambda: {
 })
 
 
-# ============================
-# MITRE MAPPING (SIMPLE CORE SET)
-# ============================
 
 MITRE_MAP = {
     "BRUTE_FORCE": ["T1110.001"],
@@ -51,9 +44,7 @@ MITRE_MAP = {
 }
 
 
-# ============================
-# HELPERS
-# ============================
+
 
 def now():
     return time.time()
@@ -65,10 +56,7 @@ def make_fingerprint(alert):
 
 
 def dedup_alert(alert_id, fingerprint, ttl=30):
-    """
-    Prevent alert flooding:
-    - same ID OR same fingerprint within TTL ignored
-    """
+
     if alert_id in alerts:
         return False
 
@@ -80,9 +68,7 @@ def dedup_alert(alert_id, fingerprint, ttl=30):
 
 
 def compute_case_risk(case):
-    """
-    UEBA-lite scoring
-    """
+
     score = 0
 
     score += case["failed_auth_total"] * 2
@@ -107,10 +93,6 @@ def severity_from_risk(risk):
     return "LOW"
 
 
-# ============================
-# ROUTES
-# ============================
-
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -126,9 +108,6 @@ def get_cases():
     return jsonify(dict(cases))
 
 
-# ============================
-# SOCKET CONNECT
-# ============================
 
 def sanitize(obj):
     if isinstance(obj, set):
@@ -157,9 +136,7 @@ def on_connect():
         sanitize(dict(cases))
     )
 
-# ============================
-# ALERT INGESTION PIPELINE
-# ============================
+
 
 @socketio.on("new_alert")
 def handle_new_alert(data):
@@ -170,9 +147,7 @@ def handle_new_alert(data):
 
     fingerprint = make_fingerprint(data)
 
-    # ----------------------------
-    # DEDUP ENGINE
-    # ----------------------------
+
     if not dedup_alert(alert_id, fingerprint):
         return
 
@@ -182,10 +157,6 @@ def handle_new_alert(data):
     # store alert
     alerts[alert_id] = data
 
-
-    # ============================
-    # CASE ENGINE (UEBA CORE)
-    # ============================
 
     ip = data.get("ip", "unknown")
     user = data.get("user", "unknown")
@@ -210,12 +181,10 @@ def handle_new_alert(data):
     # UEBA aggregation
     case["failed_auth_total"] += data.get("failed_auth", 0)
 
-    # risk scoring
     risk = compute_case_risk(case)
     case["risk_score"] = risk
     case["severity"] = severity_from_risk(risk)
 
-    # attach MITRE mapping
     data["mitre"] = MITRE_MAP.get(attack_type, [])
 
 

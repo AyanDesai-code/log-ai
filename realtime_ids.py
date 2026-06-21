@@ -9,58 +9,42 @@ import socketio
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
-# =========================================================
-# CONFIG
-# =========================================================
 LOG_PATH = "/var/log/auth.log"
 WINDOW_SIZE = 12
 ALERT_COOLDOWN = 20
-CASE_WINDOW_TTL = 300  # 5 min behavioral window
+CASE_WINDOW_TTL = 300  
 
 buffer = deque(maxlen=WINDOW_SIZE)
 
-# =========================================================
-# SOCKET
-# =========================================================
+
 sio = socketio.Client(reconnection=True)
 
-# =========================================================
-# STATE
-# =========================================================
+
 last_alert_time = {}
 
 cases = defaultdict(lambda: {
     "ip": None,
     "user": None,
 
-    # ---- behavioral metrics (UEBA CORE)
     "failed_auth": 0,
     "failed_rate": 0.0,
     "unique_users_seen": set(),
     "unique_ips_seen": set(),
 
-    # ---- activity
     "sessions": 0,
     "logins": 0,
     "event_count": 0,
 
-    # ---- timeline
     "first_seen": None,
     "last_seen": None,
 
-    # ---- intelligence
     "attack_type": "NORMAL",
     "confidence": 0.0,
     "severity": "LOW",
 
-    # ---- MITRE ATT&CK mapping
     "mitre": [],
 })
 
-
-# =========================================================
-# HELPERS
-# =========================================================
 def now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -89,9 +73,6 @@ def severity_from_risk(risk):
     return "LOW"
 
 
-# =========================================================
-# MITRE MAPPING (IMPORTANT FOR ENTERPRISE SOC)
-# =========================================================
 def mitre_map(label):
     return {
         "BRUTE_FORCE": ["T1110"],
@@ -101,10 +82,6 @@ def mitre_map(label):
         "NORMAL": []
     }.get(label, [])
 
-
-# =========================================================
-# UEBA FEATURE EXTRACTION
-# =========================================================
 def extract_features(lines):
     failed = 0
     sessions = 0
@@ -138,10 +115,6 @@ def extract_features(lines):
 
     return [failed, sessions, logins], ip, user
 
-
-# =========================================================
-# BASELINE ML MODEL (ANOMALY DETECTION)
-# =========================================================
 print("🔧 Training baseline model...")
 
 with open(LOG_PATH, "r") as f:
@@ -162,9 +135,6 @@ model.fit(X_train)
 print("✅ SIEM ML engine ready")
 
 
-# =========================================================
-# ALERT DEDUP ENGINE (CRITICAL ENTERPRISE FEATURE)
-# =========================================================
 def should_alert(ip, user, label):
     key = f"{ip}-{user}-{label}"
     now_t = time.time()
@@ -175,10 +145,7 @@ def should_alert(ip, user, label):
     last_alert_time[key] = now_t
     return True
 
-
-# =========================================================
-# HYBRID CLASSIFIER (UEBA + RULE + ML FUSION)
-# =========================================================
+0
 def hybrid_detect(features, ip, user, buffer_lines, ml_score):
     failed, sessions, logins = features
     lines = [str(l).lower() for l in buffer_lines]
@@ -186,17 +153,13 @@ def hybrid_detect(features, ip, user, buffer_lines, ml_score):
     recent_failed = sum("failed password" in l for l in lines)
     session_absent = sessions == 0
 
-    # -------------------------
-    # BRUTE FORCE DOMINANT LOGIC (FIXED PRIORITY)
-    # -------------------------
+
     brute_score = failed * 3 + recent_failed * 4
 
     enum_score = failed * 2 + (6 if session_absent else 0)
     stuffing_score = failed * 2 + (3 if user != "unknown" else 0)
 
-    # -------------------------
-    # RULES (ORDER FIXED)
-    # -------------------------
+
     if brute_score >= 10:
         label = "BRUTE_FORCE"
         base = 0.97
@@ -217,9 +180,6 @@ def hybrid_detect(features, ip, user, buffer_lines, ml_score):
         label = "NORMAL"
         base = 0.50
 
-    # -------------------------
-    # ML FUSION
-    # -------------------------
     anomaly = ml_score < -0.22
 
     risk = base
@@ -235,9 +195,7 @@ def hybrid_detect(features, ip, user, buffer_lines, ml_score):
 
     return label, risk
 def sanitize(obj):
-    """
-    Recursively convert non-JSON-safe types.
-    """
+
     if isinstance(obj, set):
         return list(obj)
 
@@ -249,9 +207,7 @@ def sanitize(obj):
 
     return obj
 
-# =========================================================
-# SOCKET
-# =========================================================
+
 @sio.event
 def connect():
     print("✅ Connected to SOC server")
@@ -266,15 +222,10 @@ def send_alert(alert):
         sio.emit("new_alert", sanitize(alert))
 
 
-# =========================================================
-# CONNECT
-# =========================================================
+
 sio.connect("http://localhost:5000")
 
 
-# =========================================================
-# LIVE PIPELINE
-# =========================================================
 proc = subprocess.Popen(
     ["tail", "-F", LOG_PATH],
     stdout=subprocess.PIPE,
@@ -304,9 +255,6 @@ while True:
 
     case = cases[ip]
 
-    # -------------------------
-    # UEBA CASE ENGINE
-    # -------------------------
     case["ip"] = ip
     case["user"] = user
 
@@ -328,9 +276,6 @@ while True:
     case["severity"] = severity_from_risk(risk)
     case["mitre"] = mitre_map(attack_type)
 
-    # -------------------------
-    # FINAL ATTACK DECISION
-    # -------------------------
     is_attack = ml_score < -0.22 or features[0] >= 5
 
     if is_attack and should_alert(ip, user, attack_type):
@@ -357,7 +302,7 @@ while True:
             "case": sanitize(dict(case))
 }
 
-        print("🚨 ALERT:", alert)
+        print("ALERT:", alert)
         send_alert(alert)
 
     time.sleep(0.05)
